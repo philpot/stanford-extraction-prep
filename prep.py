@@ -57,7 +57,133 @@ binDir = os.getcwd() if location=="hdfs" else os.path.join(os.path.dirname(__fil
 def binPath(n):
     return os.path.join(binDir, n)
 
-def prep(sc, input, output, 
+# Adapted from Dipsy's list from dig-aligment ht version 1.0
+
+sourceById = {
+"1":	"backpage",
+"2":	"craigslist",
+"3":	"classivox",
+"4":	"myproviderguide",
+"5":	"naughtyreviews",
+"6":	"redbook",
+"7":	"cityvibe",
+"8":	"massagetroll",
+"9":	"redbookforum",
+"10":   "cityxguide",
+"11":   "cityxguideforum",
+"12":   "rubads",
+"13":   "anunico",
+"14":   "sipsap",
+"15":   "escortsincollege",
+"16":   "escortphonelist",
+"17":   "eroticmugshots",
+"18":   "escortads.xxx",
+"19":   "escorts inca",
+"20":   "escortsinthe.us",
+"21":   "liveescortreviews",
+"22":   "myproviderguideforum",
+"23":   "usasexguide",
+"24":   "theeroticreview",
+"25":   "adultsearch",
+"26":   "happymassage",
+"27":   "utopiaguide",
+"28":   "missing kids",
+"29":   "alibaba",
+"30":   "justlanded",
+"31":   "gmdu",
+"32":   "tradekey",
+"33":   "manpowervacancy",
+"34":   "gulfjobsbank",
+"35":   "ec21"
+}
+
+sourceByName = {
+"backpage":	"1",
+"craigslist":	"2",
+"classivox":	"3",
+"myproviderguide":	"4",
+"naughtyreviews":	"5",
+"redbook":	"6",
+"cityvibe":	"7",
+"massagetroll":	"8",
+"redbookforum":	"9",
+"cityxguide":   "10",
+"cityxguideforum":   "11",
+"rubads":   "12",
+"anunico":   "13",
+"sipsap":   "14",
+"escortsincollege":   "15",
+"escortphonelist":   "16",
+"eroticmugshots":   "17",
+"escortads.xxx":   "18",
+"escorts inca":   "19",
+"escortsinthe.us":   "20",
+"liveescortreviews":   "21",
+"myproviderguideforum":   "22",
+"usasexguide":   "23",
+"theeroticreview":   "24",
+"adultsearch":   "25",
+"happymassage":   "26",
+"utopiaguide":   "27",
+"missing kids":   "28",
+"alibaba":   "29",
+"justlanded":   "30",
+"gmdu":   "31",
+"tradekey":   "32",
+"manpowervacancy":   "33",
+"gulfjobsbank":   "34",
+"ec21":   "35"
+}
+
+"""
+adultsearch
+backpage
+cityvibe
+cityxguide
+classivox
+craigslist
+escortadsxxx
+escortphonelist
+escortsinca
+escortsincollege
+escortsintheus
+massagetroll
+myproviderguide
+redbook
+rubads
+sipsap
+usasexguide
+utopiaguide
+"""
+
+"""
+adultsearch
+backpage
+cityvibe
+cityxguide
+classivox
+craigslist
+escortadsxxx
+escortphonelist
+escortsinca
+escortsincollege
+escortsintheus
+massagetroll
+myproviderguide
+redbook
+rubads
+sipsap
+usasexguide
+utopiaguide
+"""
+
+def getSourceById(id, url):
+    return sourceById.get(id, "unknownsourceid_{}".format(id))
+
+def getSourceByName(name, url):
+    return sourceByName.get(name, "unknownsourcename_{}".format(name))
+
+def prep(sc, cdr, stanford, output, 
          uriClass='Offer',
          # minimum initial number of partitions
          numPartitions=None, 
@@ -119,7 +245,41 @@ def prep(sc, input, output,
 #         rdd_ingest = sc.sequenceFile(input)
 #     rdd_ingest.setName('rdd_ingest_input')
     
-    rdd_cdr = sc.textFile('data/query/sentences.json')
+    rdd_cdr = sc.textFile(cdr)
+    rdd_cdr.setName('cdr')
+    debugDump(rdd_cdr)
+    
+    def splitCdrLine(line):
+        (url, jdata) = line.split('\t')
+        d = json.loads(jdata)
+        # sid = d["_source"]["sid"]
+        sourceId = d["_source"]["sources_id"]
+        incomingId = d["_source"]["incoming_id"]
+        id = d["_source"]["id"]
+        return ( (sourceId, incomingId), id )
+    rdd_cdr_split = rdd_cdr.map(lambda line: splitCdrLine(line))
+    rdd_cdr_split.setName('rdd_cdr_split')
+    debugDump(rdd_cdr_split)
+    
+    rdd_stanford = sc.textFile(stanford)
+    rdd_stanford.setName('stanford')
+    debugDump(rdd_stanford)
+
+    def splitStanfordLine(line):
+        sourceNameCrawlId, valuesExpr = line.split('\t')
+        (sourceName, crawlId) = sourceNameCrawlId.split(":")
+        sourceId = getSourceByName(sourceName)
+        values = values.split(',')
+        return ( (sourceId, crawlId), tuple(values) )
+
+    rdd_stanford_split = rdd_stanford.map(lambda line: splitStanfordLine(line))
+    rdd_stanford_split.setName('rdd_stanford_split')
+    debugDump(rdd_stanford_split)
+
+    rdd_net = rdd_stanford_split.fullOuterJoin(rdd_cdr_split)
+    rdd_net.setName('rdd_net')
+    debugDump(rdd_net)
+
     exit()
 
     showPartitioning(rdd_ingest)
@@ -464,7 +624,8 @@ def main(argv=None):
     '''this is called if run from command line'''
     # pprint.pprint(sorted(os.listdir(os.getcwd())))
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i','--input', required=True)
+    parser.add_argument('-c','--cdr', default='data/in/stanford/phone_numbers.tsv')
+    parser.add_argument('-s','--stanford', default='data/in/cdr/1000ht.json')
     parser.add_argument('-o','--output', required=True)
     parser.add_argument('-u','--uriClass', default='Offer')
     parser.add_argument('-p','--numPartitions', required=False, default=None, type=int,
@@ -489,7 +650,8 @@ def main(argv=None):
         sparkName = sparkName + " " + str(args.name)
 
     sc = SparkContext(appName=sparkName)
-    prep(sc, args.input, args.output, 
+    prep(sc, args.cdr, args.stanford,
+         args.output, 
          uriClass=args.uriClass,
          numPartitions=args.numPartitions,
          limit=args.limit,
