@@ -74,9 +74,9 @@ sourceById = {
 "15":   "escortsincollege",
 "16":   "escortphonelist",
 "17":   "eroticmugshots",
-"18":   "escortads.xxx",
-"19":   "escorts inca",
-"20":   "escortsinthe.us",
+"18":   "escortadsxxx",
+"19":   "escortsinca",
+"20":   "escortsintheus",
 "21":   "liveescortreviews",
 "22":   "myproviderguideforum",
 "23":   "usasexguide",
@@ -112,9 +112,9 @@ sourceByName = {
 "escortsincollege":   "15",
 "escortphonelist":   "16",
 "eroticmugshots":   "17",
-"escortads.xxx":   "18",
-"escorts inca":   "19",
-"escortsinthe.us":   "20",
+"escortadsxxx":   "18",
+"escortsinca":   "19",
+"escortsintheus":   "20",
 "liveescortreviews":   "21",
 "myproviderguideforum":   "22",
 "usasexguide":   "23",
@@ -265,7 +265,7 @@ def prep(sc, cdr, stanford, output,
     rdd_cdr_split.setName('rdd_cdr_split')
     debugDump(rdd_cdr_split)
 
-    rdd_cdr_sort = rdd_cdr.sortByKey()
+    rdd_cdr_sort = rdd_cdr_split.sortByKey()
     rdd_cdr_sort.setName('rdd_cdr_sort')
     debugDump(rdd_cdr_sort)
 
@@ -291,7 +291,7 @@ def prep(sc, cdr, stanford, output,
     rdd_stanford_split.setName('rdd_stanford_split')
     debugDump(rdd_stanford_split)
 
-    rdd_stanford_sort = rdd_stanford.sortByKey()
+    rdd_stanford_sort = rdd_stanford_split.sortByKey()
     rdd_stanford_sort.setName('rdd_stanford_sort')
     debugDump(rdd_stanford_sort)
 
