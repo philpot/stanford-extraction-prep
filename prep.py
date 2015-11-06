@@ -184,7 +184,7 @@ def getSourceById(id):
 def getSourceByName(name):
     return sourceByName.get(name, "unknownsourcename_{}".format(name))
 
-def prep(sc, cdr, stanford, output, 
+def prep(sc, cdr, stanford, successOutput, failOutput,
          uriClass='Offer',
          # minimum initial number of partitions
          numPartitions=None, 
@@ -205,7 +205,7 @@ def prep(sc, cdr, stanford, output,
                 valueCount = -1
             print "At %s, there are %d partitions with on average %s values" % (rdd.name(), partitionCount, int(valueCount/float(partitionCount)))
 
-    debugOutput = output + '_debug'
+    debugOutput = successOutput + '_debug'
     def debugDump(rdd,keys=True,listElements=False):
         showPartitioning(rdd)
         keys=False
@@ -316,9 +316,10 @@ def prep(sc, cdr, stanford, output,
     # all stanford gets a CDR tag
     # rdd_net = rdd_stanford_sort.leftOuterJoin(rdd_cdr_sort)
     # elements look like
-    # (sourceIdInt, crawlIdInt) => ( <stanfordValuesTuple>, <cdrId> )
+    # (sourceIdInt, crawlIdInt) => ( <stanfordValuesTuple>, <cdrValuesTuple> )
+    # ((4, 129640), ((u'(415) 683-3245',), (346752, u'http://www.myproviderguide.com/escorts/san-francisco/free-posts/w4m/5686036_outcalls-only-silm-girl-korean.html')))
     # where <stanfordValuesTuple> can be None
-    # where <cdrId> can be None
+    # where <cdrValuesTuple> can be None
     # this is what we might want
     # rdd_net = rdd_stanford_sort.fullOuterJoin(rdd_cdr_sort)
     # this is empty?
@@ -326,9 +327,10 @@ def prep(sc, cdr, stanford, output,
     rdd_net.setName('rdd_net')
     print "Total {} joined tuples".format(rdd_net.count())
     debugDump(rdd_net)
+    exit(0)
 
     # successful are those where cdr ID is not None)
-    rdd_success = rdd_net.filter(lambda r: r[1][1])
+    rdd_success = rdd_net.filter(lambda r: r[1][1][0])
     print "Success {} joined tuples".format(rdd_success.count())
     rdd_success.setName('rdd_success')
     debugDump(rdd_success)
@@ -352,17 +354,29 @@ def prep(sc, cdr, stanford, output,
 
     rdd_success_json = rdd_success.map(lambda r: json.dumps(emitJson(r)))
 
-    rdd_final = rdd_success_json
-    if rdd_final.isEmpty():
-        print "### NO DATA TO WRITE"
+    if rdd_success_json.isEmpty():
+        print "### NO SUCCESS DATA TO WRITE"
     else:
         if outputFormat == "sequence":
-            rdd_final.saveAsSequenceFile(output)
+            rdd_success_json.saveAsSequenceFile(successOutput)
         elif outputFormat == "text":
-            rdd_final.saveAsTextFile(output)
+            rdd_success_json.saveAsTextFile(successOutput)
         elif outputFormat == "tsv":
-            rdd_tsv = rdd_final.map(lambda (k,p): k + "\t" + p[0] + "\t" + p[1])
-            rdd_tsv.saveAsTextFile(output)
+            rdd_tsv = rdd_success_json.map(lambda (k,p): k + "\t" + p[0] + "\t" + p[1])
+            rdd_tsv.saveAsTextFile(successOutput)
+        else:
+            raise RuntimeError("Unrecognized output format: %s" % outputFormat)
+
+    if rdd_fail_json.isEmpty():
+        print "### NO FAIL DATA TO WRITE"
+    else:
+        if outputFormat == "sequence":
+            rdd_fail_json.saveAsSequenceFile(failOutput)
+        elif outputFormat == "text":
+            rdd_fail_json.saveAsTextFile(failOutput)
+        elif outputFormat == "tsv":
+            rdd_tsv = rdd_fail_json.map(lambda (k,p): k + "\t" + p[0] + "\t" + p[1])
+            rdd_tsv.saveAsTextFile(failOutput)
         else:
             raise RuntimeError("Unrecognized output format: %s" % outputFormat)
 
@@ -402,7 +416,8 @@ def main(argv=None):
 
     sc = SparkContext(appName=sparkName)
     prep(sc, args.cdr, args.stanford,
-         args.output, 
+         args.output,
+         args.output + "_fail",
          uriClass=args.uriClass,
          numPartitions=args.numPartitions,
          limit=args.limit,
