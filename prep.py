@@ -8,15 +8,12 @@ import sys
 import os
 import platform
 import socket
-from hybridJaccard import HybridJaccard
 import argparse
 import json
-import cgi
-from htmltoken import tokenize
-from collections import defaultdict
 from itertools import izip_longest
 import time
 from datetime import timedelta
+from random import randint
 
 ### from trollchar.py
 
@@ -177,10 +174,10 @@ usasexguide
 utopiaguide
 """
 
-def getSourceById(id, url):
+def getSourceById(id):
     return sourceById.get(id, "unknownsourceid_{}".format(id))
 
-def getSourceByName(name, url):
+def getSourceByName(name):
     return sourceByName.get(name, "unknownsourcename_{}".format(name))
 
 def prep(sc, cdr, stanford, output, 
@@ -190,7 +187,8 @@ def prep(sc, cdr, stanford, output,
          limit=None, 
          debug=0, 
          location='hdfs', 
-         outputFormat="text"):
+         outputFormat="text",
+         sampleSeed=1234):
 
     show = True if debug>=1 else False
     def showPartitioning(rdd):
@@ -246,6 +244,12 @@ def prep(sc, cdr, stanford, output,
 #     rdd_ingest.setName('rdd_ingest_input')
     
     rdd_cdr = sc.textFile(cdr)
+    if limit:
+        # Because take/takeSample collects back to master, can create "task too large" condition
+        # rdd_ingest = sc.parallelize(rdd_ingest.take(limit))
+        # Instead, generate approximately 'limit' rows
+        ratio = float(limit) / rdd_cdr.count()
+        rdd_cdr = rdd_cdr.sample(False, ratio, seed=sampleSeed)
     rdd_cdr.setName('cdr')
     debugDump(rdd_cdr)
     
@@ -260,8 +264,19 @@ def prep(sc, cdr, stanford, output,
     rdd_cdr_split = rdd_cdr.map(lambda line: splitCdrLine(line))
     rdd_cdr_split.setName('rdd_cdr_split')
     debugDump(rdd_cdr_split)
-    
+
+    rdd_cdr_sort = rdd_cdr.sortByKey()
+    rdd_cdr_sort.setName('rdd_cdr_sort')
+    debugDump(rdd_cdr_sort)
+
     rdd_stanford = sc.textFile(stanford)
+    rdd_stanford.setName('stanford')
+    if limit:
+        # Because take/takeSample collects back to master, can create "task too large" condition
+        # rdd_ingest = sc.parallelize(rdd_ingest.take(limit))
+        # Instead, generate approximately 'limit' rows
+        ratio = float(limit) / rdd_stanford.count()
+        rdd_stanford = rdd_stanford.sample(False, ratio, seed=sampleSeed)
     rdd_stanford.setName('stanford')
     debugDump(rdd_stanford)
 
@@ -269,322 +284,25 @@ def prep(sc, cdr, stanford, output,
         sourceNameCrawlId, valuesExpr = line.split('\t')
         (sourceName, crawlId) = sourceNameCrawlId.split(":")
         sourceId = getSourceByName(sourceName)
-        values = values.split(',')
+        values = valuesExpr.split(',')
         return ( (sourceId, crawlId), tuple(values) )
 
     rdd_stanford_split = rdd_stanford.map(lambda line: splitStanfordLine(line))
     rdd_stanford_split.setName('rdd_stanford_split')
     debugDump(rdd_stanford_split)
 
-    rdd_net = rdd_stanford_split.fullOuterJoin(rdd_cdr_split)
+    rdd_stanford_sort = rdd_stanford.sortByKey()
+    rdd_stanford_sort.setName('rdd_stanford_sort')
+    debugDump(rdd_stanford_sort)
+
+    exit(0)
+    rdd_net = rdd_stanford_sort.fullOuterJoin(rdd_cdr_sort)
     rdd_net.setName('rdd_net')
     debugDump(rdd_net)
 
     exit()
 
-    showPartitioning(rdd_ingest)
-
-    # LIMIT/SAMPLE (OPTIONAL)
-    if limit==0:
-        limit = None
-    if limit:
-        # Because take/takeSample collects back to master, can create "task too large" condition
-        # rdd_ingest = sc.parallelize(rdd_ingest.take(limit))
-        # Instead, generate approximately 'limit' rows
-        ratio = float(limit) / rdd_ingest.count()
-        rdd_ingest = rdd_ingest.sample(False, ratio, seed=sampleSeed)
-        
-    # FILTER TO KNOWN INTERESTING URLS (DEBUG, OPTIONAL)
-    # For debugging, allow inclusion/exclusion of items with known behavior
-    # If set, only those URIs so listed are used, everything else is rejected
-    keepUris = []
-    # contains both hair and eyes
-    # keepUris.append('http://dig.isi.edu/ht/data/page/2384EBCB1DD4FCA505DD05AB15F386547D05B295/1429603739000/processed')
-    # contains both hair and eyes
-    # keepUris.append('http://dig.isi.edu/ht/data/page/18507EEC7DD0A94A3A00F46D8B976CDFDD258723/1429603859000/processed')
-    # contains both hair and eyeys
-    # keepUris.append('http://dig.isi.edu/ht/data/page/442EA3A8B9FF69D65BC8B0D205C8C85204A7C799/1433150174000/processed')
-    # for testing 'curly hair'
-    # keepUris.append('http://dig.isi.edu/ht/data/page/681A3E68456987B1EE11616280DC1DBBA5A6B754/1429606198000/processed')
-    if keepUris:
-        rdd_ingest = rdd_ingest.filter(lambda (k,v): k in keepUris)
-    # layout: pageUri -> content serialized JSON string
-    rdd_ingest.setName('rdd_ingest_net')
-    debugDump(rdd_ingest)
-
-    # layout: pageUri -> dict (from json)
-    rdd_json = rdd_ingest.mapValues(lambda x: json.loads(x))
-    rdd_json.setName('rdd_json')
-    debugDump(rdd_json)
-
-    # RETAIN ONLY THOSE MATCHING URI CLASS
-    if uriClass:
-        rdd_relevant = rdd_json.filter(lambda (k,j): j.get("a", None)==uriClass)
-    else:
-        rdd_relevant = rdd_json
-    rdd_relevant.setName('rdd_relevant')
-    debugDump(rdd_relevant)
-
-    def byIdentifier(k,v):
-        result = []
-        for i in asList(v.get("identifier", "missing")):
-            result.append( (k + "-" + str(i), v) )
-        return result
-
-    # Add identifier to URI
-    if svebor:
-        rdd_altered = rdd_relevant.flatMap(lambda (uri, j): byIdentifier(uri, j))
-    else:
-        rdd_altered = rdd_relevant
-    rdd_altered.setName('rdd_altered')
-    debugDump(rdd_altered)
-
-    # print "### Processing %d input pages, initially into %s partitions" % (rdd_partitioned.count(), rdd_partitioned.getNumPartitions())
-    # layout: pageUri -> (body tokens, title tokens)
-    rdd_texts = rdd_altered.mapValues(lambda x: (textTokens(extract_body(x, inputType=inputType)), 
-                                                 textTokens(extract_title(x, inputType=inputType))))
-    rdd_texts.setName('rdd_texts')
-    debugDump(rdd_texts)
-
-    # We use the following encoding for values for CRF++'s so-called
-    # labels to reduce the data size and complexity of referring to
-    # words.  Each word is assigned a URI constructed from the page
-    # URI (Karma URI) plus a 5 digit zero-padded number for the
-    # subdocument plus a 5 digit zero-padded number for the word
-    # index (1-based).  By "subdocument" we mean the page body and
-    # page title (for HT; there could be others in other domains).
-    # Additionally, an artificial "separator" document is used to
-    # generate a barrier to avoid inadvertent capture of spurious
-    # spans between subdocuments.
-    #
-    # Example: the first word of the body of
-    # http://dig.isi.edu/ht/data/page/0434CB3BDFE3839D6CAC6DBE0EBED0278D3634D8/1433149274000/processed
-    # would be http://dig.isi.edu/ht/data/page/0434CB3BDFE3839D6CAC6DBE0EBED0278D3634D8/1433149274000/processed/00000/00001
-
-    SEPARATOR = '&amp;nbsp;'
-    BODY_SUBDOCUMENT = 0
-    SEPARATOR_SUBDOCUMENT = 1
-    TITLE_SUBDOCUMENT = 2
-    c = crf_features.CrfFeatures(crfFeatureListFilename)
-
-    def makeMatrix(c, uri, bodyTokens, titleTokens):
-        b = c.computeFeatMatrix(bodyTokens, False, addLabels=False, addIndex=False)
-        s = c.computeFeatMatrix([SEPARATOR, ""], False, addLabels=False, addIndex=False)
-        t = c.computeFeatMatrix(titleTokens, False, addLabels=False, addIndex=False)
-        # BODY
-        idx = 1
-        for row in b:
-            if row == u"":
-                pass
-            else:
-                label = uri + "/%05d/%05d" % (BODY_SUBDOCUMENT, idx)
-                row.append(label)
-                idx += 1
-        # SEPARATOR pseudo document
-        idx = 1
-        for row in s:
-            if row == u"":
-                pass
-            else:
-                label = uri + "/%05d/%05d" % (SEPARATOR_SUBDOCUMENT, idx)
-                row.append(label)
-                idx += 1
-        # TITLE
-        idx = 1
-        for row in t:
-            if row == u"":
-                pass
-            else:
-                label = uri + "/%05d/%05d" % (TITLE_SUBDOCUMENT, idx)
-                row.append(label)
-                idx += 1
-        # Keep the empty string semaphor from the title (last
-        # component) for CRF++ purposes
-        return b[0:-1] + s[0:-1] + t
-
-    # page feature matrix including body, separator, title
-    # (vector of vectors, includes separator rows)
-    # layout: pageUri -> (python) vector of vectors
-    rdd_features = rdd_texts.map(lambda (k,v): (k, makeMatrix(c, k, v[0], v[1])))
-    rdd_features.setName('rdd_features')
-    debugDump(rdd_features)
-
-    # unicode UTF-8 representation of the feature matrix
-    # layout: pageUri -> unicode UTF-8 representation of the feature matrix
-    rdd_vector = rdd_features.mapValues(lambda x: vectorToUTF8(x))
-    rdd_vector.setName('rdd_vector')
-    debugDump(rdd_vector)
-
-    # Disregard keys/partitioning considerations here
-    # Drop keys put serialized vectors into lists of size chunksPerPartition, dropping any nulls, then concatenate
-
-    # layout: lists of size up to chunksPerPartition of UTF8(feature vectors)
-    rdd_chunked = rdd_vector.values().glom().map(lambda l: [filter(lambda e: e, x) for x in iterChunks(l, chunksPerPartition)]).map(lambda l: ["".join(x) for x in l])
-    rdd_chunked.setName('rdd_chunked')
-    debugDump(rdd_chunked, keys=False)
-
-    rdd_pipeinput = rdd_chunked.flatMap(lambda x: x).map(lambda r: b64encode(r))
-    rdd_pipeinput.setName('rdd_pipeinput')
-    debugDump(rdd_pipeinput, keys=False)
-
-    # base64 encoded result of running crf_test and filtering to
-    # include only word, wordUri, non-null label
-    # local
-    executable = SparkFiles.get(os.path.basename(crfExecutable)) if location=="local" else os.path.basename(crfExecutable)
-    # local
-    model = SparkFiles.get(os.path.basename(crfModelFilename)) if location=="local" else os.path.basename(crfModelFilename)
-    cmd = "%s %s" % (executable, model)
-    print "### Pipe cmd is %r" % cmd
-
-    rdd_pipeoutput = rdd_pipeinput.pipe(cmd)
-    if coalescePartitions:
-        rdd_pipeoutput = rdd_pipeoutput.coalesce(max(2, coalescePartitions))
-    rdd_pipeoutput.setName('rdd_pipeoutput')
-    debugDump(rdd_pipeoutput)
-
-    # base64 decoded to regular serialized string
-    # beware newlines corresponding to empty CRr++ crf_test output 
-    # There may be a need to utf8 decode this data upon reacquisition, but believed not
-    rdd_base64decode = rdd_pipeoutput.map(lambda x: b64decode(x))
-    rdd_base64decode.setName('rdd_base64decode')
-    debugDump(rdd_base64decode)
-
-    def reorg(tabsep):
-        (word, uri, label) = tabsep.split('\t')
-        return (uri, (word, label))
-
-    # 1. break into physical lines
-    # 2. drop any inter-document empty string markers
-    # 3. destructure each line into its own word, wordUri, label row
-    # wordUri -> (word,label)
-    rdd_tabular = rdd_base64decode.map(lambda b: b.split('\n')).flatMap(lambda x: x).filter(lambda x: x).map(lambda l: reorg(l))
-    rdd_tabular.setName('rdd_tabular')
-    debugDump(rdd_tabular)
-
-    def organizeByOrigDoc(uri, word, label):
-        (parentUri, docId, wordId) = uri.rsplit('/', 2)
-        return ( (parentUri, docId), (wordId, word, label) )
-
-    # composite key (docUri, subdocId) -> (wordId, word, label)
-    rdd_reorg = rdd_tabular.map(lambda (uri,tpl): organizeByOrigDoc(uri, tpl[0], tpl[1]))
-    rdd_reorg.setName('rdd_reorg')
-    debugDump(rdd_reorg)
-
-    def seqFunc(s,c):
-        s.add(c)
-        return s
-
-    def combFunc(s1, s2):
-        s1.update(s2)
-        return s1
-
-    # composite key (docUri, subdocId) -> set of (wordId, word, label)
-    rdd_agg = rdd_reorg.aggregateByKey(set(),
-                                       lambda s,c: seqFunc(s,c),
-                                       lambda s1,s2: combFunc(s1,s2))
-    rdd_agg.setName('rdd_agg')
-    debugDump(rdd_agg)
-
-    # (docUri, subDocId) -> sorted list of (wordId, word, label)
-    rdd_grouped = rdd_agg.mapValues(lambda s: sorted(s))
-    rdd_grouped.setName('rdd_grouped')
-    debugDump(rdd_grouped)
-
-    def harvest(seq):
-        allSpans = []
-        lastIndex = -2
-        lastLabel = None
-        currentSpan = []
-        for (wordId, word, label) in seq:
-            currentIndex = int(wordId)
-            if lastIndex+1 == currentIndex and lastLabel == label:
-                # continuing current span
-                currentSpan.append( (currentIndex, word, label) )
-            else:
-                # end current span
-                if currentSpan:
-                    allSpans.append(currentSpan)
-                # begin new span
-                currentSpan = [ (currentIndex, word, label) ]
-                lastLabel = label
-            lastIndex = currentIndex
-
-        # end current span
-        if currentSpan:
-            allSpans.append(currentSpan)
-        
-        result = []
-        for span in allSpans:
-            words = []
-            spanLabel = None
-            for (wordIdx, word, label) in span:
-                spanLabel = label
-                words.append(word)
-            result.append( (' '.join(words), spanLabel) )
-        return result
-            
-    # ( (parentUri, docId), [ (words1, category1), (words2, category2), ... ]
-    rdd_harvest = rdd_grouped.mapValues(lambda s: harvest(s))
-    rdd_harvest.setName('rdd_harvest')
-    debugDump(rdd_harvest)
-
-    # parentUri -> (words, category)
-    # we use .distinct() because (e.g.) both title and body might mention the same feature
-    rdd_flat = rdd_harvest.map(lambda r: (r[0][0], r[1])).flatMapValues(lambda x: x).distinct()
-    rdd_flat.setName('rdd_flat')
-    debugDump(rdd_flat)
-
-    # We map from CRF output (category) to (potentially multiple) HJ handle(s)
-    hjHandlers = defaultdict(list)
-    for (category,digFeature,config,reference) in jaccardSpecs:
-        # add one handler
-        hjHandlers[category].append({"category": category,
-                                     "featureName": digFeature,
-                                     "hybridJaccardInterpreter": HybridJaccard(config_path=config, ref_path=reference).findBestMatch})
-
-    def jaccard(tpl):
-        results = []
-        (words, category) = tpl
-        for handler in hjHandlers[category]:
-            results.append({"featureName": handler["featureName"],
-                            "featureValue": handler["hybridJaccardInterpreter"](words),
-                            # for debugging
-                            "crfCategory": category,
-                            "crfWordSpan": words,
-                            # intended to support parametrization/provenance
-                            "featureDefinitionFile": os.path.basename(crfFeatureListFilename),
-                            "featureCrfModelFile": os.path.basename(crfModelFilename)})
-        return results
-
-    # there could be more than one interpretation, e.g. hairColor + hairType for a given CRF category
-    # use flatMapValues to iterate over all
-    rdd_jaccard = rdd_flat.flatMapValues(lambda v: jaccard(v))
-    rdd_jaccard.setName('rdd_jaccard')
-    debugDump(rdd_jaccard)
-
-    def extendDict(d, key, value):
-        d[key] = value
-        return d
-
-    # add in the URI for karma modeling purposes
-    rdd_aligned = rdd_jaccard.map(lambda (uri,v): (uri, extendDict(v, "uri", uri)))
-    rdd_aligned.setName('rdd_aligned')
-    debugDump(rdd_aligned)
-
-    # rdd_aligned = rdd_pipeinput
-    # docUri -> json
-
-    def recoverIdentifier(k):
-        return k.rsplit('-',1)[-1]
-
-    if svebor:
-        rdd_final = rdd_aligned.map(lambda (k,v): (recoverIdentifier(k), (v.get("featureName"),
-                                                                          v.get("featureValue")))).filter(lambda (k,p): p[1]!='NONE')
-    else:
-        rdd_final = rdd_aligned.mapValues(lambda v: json.dumps(v))
-    rdd_final.setName('rdd_final')
-    debugDump(rdd_final)
-
+    rdd_final = rdd_net
     if rdd_final.isEmpty():
         print "### NO DATA TO WRITE"
     else:
@@ -624,8 +342,8 @@ def main(argv=None):
     '''this is called if run from command line'''
     # pprint.pprint(sorted(os.listdir(os.getcwd())))
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c','--cdr', default='data/in/stanford/phone_numbers.tsv')
-    parser.add_argument('-s','--stanford', default='data/in/cdr/1000ht.json')
+    parser.add_argument('-c','--cdr', default='data/in/cdr/1ht.json')
+    parser.add_argument('-s','--stanford', default='data/in/stanford/phone_numbers.tsv')
     parser.add_argument('-o','--output', required=True)
     parser.add_argument('-u','--uriClass', default='Offer')
     parser.add_argument('-p','--numPartitions', required=False, default=None, type=int,
