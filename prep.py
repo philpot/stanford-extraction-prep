@@ -284,6 +284,14 @@ def prep(sc, cdr, stanford, output,
         sourceNameCrawlId, valuesExpr = line.split('\t')
         (sourceName, crawlId) = sourceNameCrawlId.split(":")
         sourceId = getSourceByName(sourceName)
+        try:
+            sourceId = int(sourceId)
+        except:
+            pass
+        try:
+            crawlId = int(crawlId)
+        except:
+            pass
         values = valuesExpr.split(',')
         return ( (sourceId, crawlId), tuple(values) )
 
