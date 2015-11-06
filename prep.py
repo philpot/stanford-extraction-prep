@@ -13,9 +13,6 @@ import argparse
 import json
 import cgi
 from htmltoken import tokenize
-import crf_features
-from base64 import b64encode, b64decode
-from random import randint
 from collections import defaultdict
 from itertools import izip_longest
 import time
@@ -36,94 +33,6 @@ def iterChunks(iterable, n, fillvalue=None):
     return izip_longest(*args, fillvalue=fillvalue)
 
 ### end from util.py
-
-DIG_HT = 1
-DIG_GENERIC = 2
-
-def extract_body(main_json, inputType=DIG_HT):
-    if inputType == DIG_HT:
-        try:
-            text = main_json["hasBodyPart"]["text"]
-            return text
-        except:
-            pass
-    elif inputType == DIG_GENERIC:
-        try:
-            text = main_json["mainEntityOfPage"]["description"]
-            return text
-        except:
-            return None
-    else:
-        raise RuntimeError("Unrecognized input type: %s" % inputType)
-
-def extract_title(main_json, inputType=DIG_HT):
-    if inputType == DIG_HT:
-        try:
-            return main_json["hasTitlePart"]["text"]
-        except:
-            pass
-    elif inputType == DIG_GENERIC:
-        try:
-            text = main_json["title"]
-            return text
-        except:
-            pass
-    else:
-        raise RuntimeError("Unrecognized input type: %s" % inputType)
-    
-def textTokens(texts):
-    # Turn None into empty text 
-    texts = texts or ""
-    # Allow for multiple texts
-    texts = texts if isinstance(texts, list) else [texts]
-    v = []
-    for text in texts:
-        try:
-            for tok in genescaped(text):
-                v.append([tok])
-        except TypeError as e:
-            print >> sys.stderr, "Error %s" % e
-            print >> sys.stderr, type(text)
-            print >> sys.stderr, "Computing textTokens of %s: %s" % (text, e)
-        v.append("")
-    return v
-
-def genescaped(text, maxTokenLength=40):
-    """All tokens in TEXT with any odd characters (such as <>&) encoded using HTML escaping"""
-    for tok in tokenize(text, interpret=cgi.escape, keepTags=False):
-        # Some ads have odd tokens like 1000 As in a row
-        if len(tok) <= maxTokenLength:
-            # yield tok
-            yield tok.replace('\t', ' ')
-
-def vectorToUTF8(v, debug=False):
-    "unicode only"
-
-    def rowToUnicode(r):
-        try:
-            if isinstance(r, list):
-                return u"\t".join([unicode(x) for x in r])
-            else:
-                return unicode(r)
-        except:
-            print >> sys.stderr, "error in rowToUnicode"
-            return u""
-
-    rows = []
-    if v[-1] == u"":
-        pass
-    else:
-        # print "appending1"
-        v.append(u"")
-
-    for r in v:
-        rows.append(rowToUnicode(r))
-
-    result = u"\n".join(rows)
-    # result now a unicode object
-    # here is the only place where we convert to UTF8
-    return result.encode('utf-8')
-
 # Sniff for execution environment
 
 location = "hdfs"
@@ -148,22 +57,14 @@ binDir = os.getcwd() if location=="hdfs" else os.path.join(os.path.dirname(__fil
 def binPath(n):
     return os.path.join(binDir, n)
 
-def crfprocess(sc, input, output, 
-               uriClass='Offer',
-               featureListFilename=configPath('features.hair-eye'),
-               modelFilename=configPath('dig-hair-eye-train.model'),
-               jaccardSpecs=[],
-               svebor=False,
-               # minimum initial number of partitions
-               numPartitions=None, 
-               # number of documents to send to CRF in one call
-               chunksPerPartition=100,
-               # coalesce/down partition to this number after CRF
-               coalescePartitions=None,
-               # inputType
-               inputType=DIG_HT,
-               limit=None, sampleSeed=1234,
-               debug=0, location='hdfs', outputFormat="text"):
+def prep(sc, input, output, 
+         uriClass='Offer',
+         # minimum initial number of partitions
+         numPartitions=None, 
+         limit=None, 
+         debug=0, 
+         location='hdfs', 
+         outputFormat="text"):
 
     show = True if debug>=1 else False
     def showPartitioning(rdd):
@@ -211,20 +112,16 @@ def crfprocess(sc, input, output,
         print "Just finished %s with size %s" % (rdd.name(), k)
         exit(0)
 
-    crfFeatureListFilename = featureListFilename
-    crfModelFilename = modelFilename
-    crfExecutable = binPath("crf_test_filter.sh")
-    crfExecutable = binPath("crf_test_filter_lines.sh")
-    crfExecutable = "apply_crf_lines.py"
-    sc.addFile(crfExecutable)
-    sc.addFile(crfModelFilename)
-
     # LOADING DATA
-    if numPartitions:
-        rdd_ingest = sc.sequenceFile(input, minSplits=numPartitions)
-    else:
-        rdd_ingest = sc.sequenceFile(input)
-    rdd_ingest.setName('rdd_ingest_input')
+#     if numPartitions:
+#         rdd_ingest = sc.sequenceFile(input, minSplits=numPartitions)
+#     else:
+#         rdd_ingest = sc.sequenceFile(input)
+#     rdd_ingest.setName('rdd_ingest_input')
+    
+    rdd_cdr = sc.textFile('data/query/sentences.json')
+    exit()
+
     showPartitioning(rdd_ingest)
 
     # LIMIT/SAMPLE (OPTIONAL)
@@ -570,35 +467,16 @@ def main(argv=None):
     parser.add_argument('-i','--input', required=True)
     parser.add_argument('-o','--output', required=True)
     parser.add_argument('-u','--uriClass', default='Offer')
-    parser.add_argument('-f','--featureListFilename', default=configPath('features.hair-eye'))
-    parser.add_argument('-m','--modelFilename', default=configPath('dig-hair-eye-train.model'))
-    parser.add_argument('-j','--jaccardSpec', action='append', default=[], type=jaccardSpec,
-                        help='each value should be <category,featureName,config.json,reference.txt>')
     parser.add_argument('-p','--numPartitions', required=False, default=None, type=int,
                         help='minimum initial number of partitions')
-    parser.add_argument('-c','--chunksPerPartition', required=False, default=100, type=int,
-                        help='number of CRF input documents presented to crf_test at a time')
-    parser.add_argument('-k','--coalescePartitions', required=False, default=None, type=int,
-                        help='number of partitions to coalesce down to after crf')
     parser.add_argument('-n','--name', required=False, default="", help='Added to name of spark job, for debugging')
-    parser.add_argument('-t','--inputType', required=False, type=int, default=1, choices=(DIG_HT, DIG_GENERIC),
-                        help='1: istr58m/HT format; 2: generic Karma format')
     parser.add_argument('-l','--limit', required=False, default=None, type=int)
     parser.add_argument('-v','--verbose', required=False, help='verbose', action='store_true')
     parser.add_argument('-z','--debug', required=False, help='debug', type=int)
-    parser.add_argument('-s','--svebor', default=False, action='store_true')
     args=parser.parse_args()
 
     # might become an option
     outputFormat = 'sequence'
-
-    # default HJ recognizers to any known special situation 
-    if args.svebor:
-        args.jaccardSpec = sveborJaccardSpec()
-        outputFormat = 'tsv'
-    elif args.jaccardSpec == []:
-        args.jaccardSpec = defaultJaccardSpec()
-    # pprint.pprint(args.jaccardSpec)
 
     if not args.numPartitions:
         if location == "local":
@@ -606,25 +484,18 @@ def main(argv=None):
         elif location == "hdfs":
             args.numPartitions = 50
 
-    sparkName = "crfprocess"
+    sparkName = "prep"
     if args.name:
         sparkName = sparkName + " " + str(args.name)
 
     sc = SparkContext(appName=sparkName)
-    crfprocess(sc, args.input, args.output, 
-               uriClass=args.uriClass,
-               featureListFilename=args.featureListFilename,
-               modelFilename=args.modelFilename,
-               jaccardSpecs=[j.split(',') for j in args.jaccardSpec],
-               svebor=args.svebor,
-               debug=args.debug,
-               limit=args.limit,
-               location=location,
-               outputFormat=outputFormat,
-               numPartitions=args.numPartitions,
-               chunksPerPartition=args.chunksPerPartition,
-               coalescePartitions=args.coalescePartitions,
-               inputType=args.inputType)
+    prep(sc, args.input, args.output, 
+         uriClass=args.uriClass,
+         numPartitions=args.numPartitions,
+         limit=args.limit,
+         debug=args.debug,
+         outputFormat=outputFormat,
+         location=location)
 
 # call main() if this is run as standalone
 if __name__ == "__main__":
