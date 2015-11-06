@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 
+### TEST WITH THIS NUMBER (818) 200-6476
+### TEST WITH THIS VERY COMMON NUMBER (415) 683-3245
+
 try:
     from pyspark import SparkContext, SparkFiles
 except:
@@ -10,10 +13,11 @@ import platform
 import socket
 import argparse
 import json
-from itertools import izip_longest
+from itertools import izip, izip_longest, count
 import time
 from datetime import timedelta
 from random import randint
+
 
 ### from trollchar.py
 
@@ -260,7 +264,8 @@ def prep(sc, cdr, stanford, output,
         sourceId = d["_source"]["sources_id"]
         incomingId = d["_source"]["incoming_id"]
         id = d["_source"]["id"]
-        return ( (sourceId, incomingId), id )
+        url = d["_source"]["url"]
+        return ( (sourceId, incomingId), (id, url) )
     rdd_cdr_split = rdd_cdr.map(lambda line: splitCdrLine(line))
     rdd_cdr_split.setName('rdd_cdr_split')
     debugDump(rdd_cdr_split)
@@ -270,15 +275,20 @@ def prep(sc, cdr, stanford, output,
     debugDump(rdd_cdr_sort)
 
     rdd_stanford = sc.textFile(stanford)
-    rdd_stanford.setName('stanford')
+    rdd_stanford.setName('rdd_stanford')
     if limit:
         # Because take/takeSample collects back to master, can create "task too large" condition
         # rdd_ingest = sc.parallelize(rdd_ingest.take(limit))
         # Instead, generate approximately 'limit' rows
         ratio = float(limit) / rdd_stanford.count()
         rdd_stanford = rdd_stanford.sample(False, ratio, seed=sampleSeed)
+
+    # temp
+    rdd_stanford = rdd_stanford.filter(lambda line: "(415) 683" in line)
+
     rdd_stanford.setName('stanford')
     debugDump(rdd_stanford)
+
 
     def splitStanfordLine(line):
         sourceNameCrawlId, valuesExpr = line.split('\t')
@@ -303,14 +313,46 @@ def prep(sc, cdr, stanford, output,
     rdd_stanford_sort.setName('rdd_stanford_sort')
     debugDump(rdd_stanford_sort)
 
-    exit(0)
-    rdd_net = rdd_stanford_sort.fullOuterJoin(rdd_cdr_sort)
+    # all stanford gets a CDR tag
+    # rdd_net = rdd_stanford_sort.leftOuterJoin(rdd_cdr_sort)
+    # elements look like
+    # (sourceIdInt, crawlIdInt) => ( <stanfordValuesTuple>, <cdrId> )
+    # where <stanfordValuesTuple> can be None
+    # where <cdrId> can be None
+    # this is what we might want
+    # rdd_net = rdd_stanford_sort.fullOuterJoin(rdd_cdr_sort)
+    # this is empty?
+    rdd_net = rdd_stanford_sort.leftOuterJoin(rdd_cdr_sort)
     rdd_net.setName('rdd_net')
+    print "Total {} joined tuples".format(rdd_net.count())
     debugDump(rdd_net)
 
-    exit()
+    # successful are those where cdr ID is not None)
+    rdd_success = rdd_net.filter(lambda r: r[1][1])
+    print "Success {} joined tuples".format(rdd_success.count())
+    rdd_success.setName('rdd_success')
+    debugDump(rdd_success)
 
-    rdd_final = rdd_net
+    rdd_fail = rdd_net.filter(lambda r: not r[1][1])
+    print "Fail {} joined tuples".format(rdd_fail.count())
+
+    def emitJson(r):
+        (k, payload) = r
+        (sourceId, crawlId) = k
+        (stanfordValues, cdrValues) = payload
+        (adId, url) = cdrValues
+        d = {"sourceId": sourceId,
+             "sourceName": getSourceById(str(sourceId)),
+             "crawlId": crawlId,
+             "adId": adId,
+             "url": url}
+        for (value, idx) in izip(stanfordValues, count(1)):
+            d["stanfordExtraction{}".format(idx)] = value
+        return d
+
+    rdd_success_json = rdd_success.map(lambda r: json.dumps(emitJson(r)))
+
+    rdd_final = rdd_success_json
     if rdd_final.isEmpty():
         print "### NO DATA TO WRITE"
     else:
@@ -324,34 +366,16 @@ def prep(sc, cdr, stanford, output,
         else:
             raise RuntimeError("Unrecognized output format: %s" % outputFormat)
 
-def defaultJaccardSpec():
-    l = [["eyeColor", "person_eyecolor", configPath("eyeColor_config.txt"), configPath("eyeColor_reference_wiki.txt")],
-         ["hairType", "person_haircolor", configPath("hairColor_config.txt"), configPath("hairColor_reference_wiki.txt")]]
-    return [",".join(x) for x in l]
-
-def sveborJaccardSpec():
-    l = [["eyeColor", "person_eyecolor", configPath("eyeColor_config.txt"), configPath("eyeColor_reference_wiki.txt")],
-         ["hairType", "person_haircolor", configPath("hairColor_config.txt"), configPath("hairColor_reference_wiki.txt")],
-         ["hairType", "person_hairtexture", configPath("hairTexture_config.txt"), configPath("hairTexture_reference_wiki.txt")],
-         ["hairType", "person_hairlength", configPath("hairLength_config.txt"), configPath("hairLength_reference_wiki.txt")]]
-    return [",".join(x) for x in l]
-
-def jaccardSpec(s):
-    "4-tuple of string,string,existing file,existing file separated by comma"
-    try:
-        (category,digFeature,cfg,ref) = s.split(',')
-        if category and digFeature and os.path.exists(cfg) and os.path.exists(ref):
-            return s
-    except:
-        pass
-    raise argparse.ArgumentError("Unrecognized jaccard spec <category,digFeature,configFile,referenceFile> %r" % s)
-
 def main(argv=None):
     '''this is called if run from command line'''
     # pprint.pprint(sorted(os.listdir(os.getcwd())))
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c','--cdr', default='data/in/cdr/1ht.json')
-    parser.add_argument('-s','--stanford', default='data/in/stanford/phone_numbers.tsv')
+    # parser.add_argument('-c','--cdr', default='data/in/cdr/1ht.json')
+    # parser.add_argument('-c','--cdr', default='data/in/cdr/1000ht.json')
+    # parser.add_argument('-c','--cdr', default='data/in/cdr/250k_ht.json')
+    parser.add_argument('-c','--cdr', default='data/in/cdr/fake.json')
+    # parser.add_argument('-s','--stanford', default='data/in/stanford/phone_numbers.tsv')
+    parser.add_argument('-s','--stanford', default='data/in/stanford/phone_numbers2.tsv')
     parser.add_argument('-o','--output', required=True)
     parser.add_argument('-u','--uriClass', default='Offer')
     parser.add_argument('-p','--numPartitions', required=False, default=None, type=int,
@@ -364,6 +388,7 @@ def main(argv=None):
 
     # might become an option
     outputFormat = 'sequence'
+    outputFormat = 'text'
 
     if not args.numPartitions:
         if location == "local":
