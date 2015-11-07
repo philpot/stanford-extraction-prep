@@ -185,6 +185,8 @@ def getSourceByName(name):
     return sourceByName.get(name, "unknownsourcename_{}".format(name))
 
 def prep(sc, cdr, stanford, successOutput, failOutput,
+         # how many prefix fields to drop from stanford input
+         shift = 0,
          uriClass='Offer',
          # minimum initial number of partitions
          numPartitions=None, 
@@ -288,7 +290,8 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
 
 
     def splitStanfordLine(line):
-        sourceNameCrawlId, valuesExpr = line.split('\t')
+        fields = line.split('\t')[shift:]
+        sourceNameCrawlId, valuesExpr = fields
         (sourceName, crawlId) = sourceNameCrawlId.split(":")
         sourceId = getSourceByName(sourceName)
         try:
@@ -412,6 +415,7 @@ def main(argv=None):
     parser.add_argument('-s','--stanford', default='data/in/stanford/phone_numbers2.tsv')
     parser.add_argument('-g','--success', required=True)
     parser.add_argument('-f','--fail', required=True)
+    parser.add_argument('-k','--shift', default=0, type=int)
     parser.add_argument('-u','--uriClass', default='Offer')
     parser.add_argument('-p','--numPartitions', required=False, default=None, type=int,
                         help='minimum initial number of partitions')
@@ -447,6 +451,7 @@ def main(argv=None):
          limit=args.limit,
          debug=args.debug,
          outputFormat=outputFormat,
+         shift=args.shift,
          location=location,
          cheat=args.cheat)
 
