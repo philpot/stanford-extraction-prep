@@ -192,7 +192,9 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
          debug=0, 
          location='hdfs', 
          outputFormat="text",
-         sampleSeed=1234):
+         sampleSeed=1234,
+         # Cheat means artificially limit to only those cases covering known number (415) 683-3245
+         cheat=False):
 
     show = True if debug>=1 else False
     def showPartitioning(rdd):
@@ -203,7 +205,8 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
                 valueCount = rdd.countApprox(1000, confidence=0.50)
             except:
                 valueCount = -1
-            print "At %s, there are %d partitions with on average %s values" % (rdd.name(), partitionCount, int(valueCount/float(partitionCount)))
+            print ("At %s, there are %d partitions with on average %s values" % 
+                   (rdd.name(), partitionCount, int(valueCount/float(partitionCount))))
 
     debugOutput = successOutput + '_debug'
     def debugDump(rdd,keys=True,listElements=False):
@@ -240,13 +243,6 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
         print "Just finished %s with size %s" % (rdd.name(), k)
         exit(0)
 
-    # LOADING DATA
-#     if numPartitions:
-#         rdd_ingest = sc.sequenceFile(input, minSplits=numPartitions)
-#     else:
-#         rdd_ingest = sc.sequenceFile(input)
-#     rdd_ingest.setName('rdd_ingest_input')
-    
     rdd_cdr = sc.textFile(cdr)
     if limit:
         # Because take/takeSample collects back to master, can create "task too large" condition
@@ -284,7 +280,8 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
         rdd_stanford = rdd_stanford.sample(False, ratio, seed=sampleSeed)
 
     # temp
-    rdd_stanford = rdd_stanford.filter(lambda line: "(415) 683" in line)
+    if cheat:
+        rdd_stanford = rdd_stanford.filter(lambda line: "(415) 683" in line)
 
     rdd_stanford.setName('stanford')
     debugDump(rdd_stanford)
@@ -321,35 +318,50 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
     # where <stanfordValuesTuple> can be None
     # where <cdrValuesTuple> can be None
     # this is what we might want
-    # rdd_net = rdd_stanford_sort.fullOuterJoin(rdd_cdr_sort)
-    # this is empty?
+    # left outer join:
+    # keep everything from stanford, even if no match from CDR
     rdd_net = rdd_stanford_sort.leftOuterJoin(rdd_cdr_sort)
     rdd_net.setName('rdd_net')
-    print "Total {} joined tuples".format(rdd_net.count())
     debugDump(rdd_net)
-    exit(0)
 
     # successful are those where cdr ID is not None)
-    rdd_success = rdd_net.filter(lambda r: r[1][1][0])
-    print "Success {} joined tuples".format(rdd_success.count())
+    rdd_success = rdd_net.filter(lambda r: r[1] and r[1][1] and r[1][1][0])
+    print "Success {} tuples".format(rdd_success.count())
     rdd_success.setName('rdd_success')
     debugDump(rdd_success)
 
-    rdd_fail = rdd_net.filter(lambda r: not r[1][1])
-    print "Fail {} joined tuples".format(rdd_fail.count())
+    rdd_fail = rdd_net.filter(lambda r: not (r[1] and r[1][1] and r[1][1][0]))
+    print "Fail {} tuples".format(rdd_fail.count())
 
     def emitJson(r):
         (k, payload) = r
         (sourceId, crawlId) = k
         (stanfordValues, cdrValues) = payload
-        (adId, url) = cdrValues
-        d = {"sourceId": sourceId,
-             "sourceName": getSourceById(str(sourceId)),
-             "crawlId": crawlId,
-             "adId": adId,
-             "url": url}
+        adId = None
+        url = None
+        try:
+            (adId, url) = cdrValues
+        except:
+            pass
+        d = {}
+        if sourceId:
+            d["sourceId"] = sourceId
+        sourceName = None
+        try:
+            sourceName = getSourceById(str(sourceId))
+        except:
+            pass
+        if sourceName:
+            d["sourceName"] = sourceName
+        if crawlId:
+            d["crawlId"] = crawlId
+        if adId:
+            d["adId"] = adId
+        if url:
+            d["url"] = url
         for (value, idx) in izip(stanfordValues, count(1)):
-            d["stanfordExtraction{}".format(idx)] = value
+            if value:
+                d["stanfordExtraction{}".format(idx)] = value
         return d
 
     rdd_success_json = rdd_success.map(lambda r: json.dumps(emitJson(r)))
@@ -366,6 +378,8 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
             rdd_tsv.saveAsTextFile(successOutput)
         else:
             raise RuntimeError("Unrecognized output format: %s" % outputFormat)
+
+    rdd_fail_json = rdd_fail.map(lambda r: json.dumps(emitJson(r)))
 
     if rdd_fail_json.isEmpty():
         print "### NO FAIL DATA TO WRITE"
@@ -390,7 +404,8 @@ def main(argv=None):
     parser.add_argument('-c','--cdr', default='data/in/cdr/fake.json')
     # parser.add_argument('-s','--stanford', default='data/in/stanford/phone_numbers.tsv')
     parser.add_argument('-s','--stanford', default='data/in/stanford/phone_numbers2.tsv')
-    parser.add_argument('-o','--output', required=True)
+    parser.add_argument('-g','--success', required=True)
+    parser.add_argument('-f','--fail', required=True)
     parser.add_argument('-u','--uriClass', default='Offer')
     parser.add_argument('-p','--numPartitions', required=False, default=None, type=int,
                         help='minimum initial number of partitions')
@@ -398,11 +413,14 @@ def main(argv=None):
     parser.add_argument('-l','--limit', required=False, default=None, type=int)
     parser.add_argument('-v','--verbose', required=False, help='verbose', action='store_true')
     parser.add_argument('-z','--debug', required=False, help='debug', type=int)
+    parser.add_argument('-x','--cheat', required=False, help='cheat', action='store_true')
+    parser.add_argument('-y','--outputFormat', default='sequence')
     args=parser.parse_args()
 
     # might become an option
     outputFormat = 'sequence'
     outputFormat = 'text'
+    outputFormat = args.outputFormat
 
     if not args.numPartitions:
         if location == "local":
@@ -416,14 +434,15 @@ def main(argv=None):
 
     sc = SparkContext(appName=sparkName)
     prep(sc, args.cdr, args.stanford,
-         args.output,
-         args.output + "_fail",
+         args.success,
+         args.fail,
          uriClass=args.uriClass,
          numPartitions=args.numPartitions,
          limit=args.limit,
          debug=args.debug,
          outputFormat=outputFormat,
-         location=location)
+         location=location,
+         cheat=args.cheat)
 
 # call main() if this is run as standalone
 if __name__ == "__main__":
