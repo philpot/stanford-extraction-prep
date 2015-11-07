@@ -364,7 +364,12 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
                 d["stanfordExtraction{}".format(idx)] = value
         return d
 
-    rdd_success_json = rdd_success.map(lambda r: json.dumps(emitJson(r)))
+    def jsonRow(r):
+        j = emitJson(r)
+        return (j.get("url", "noUrlAvailable"), j)
+
+    # rdd_success_json = rdd_success.map(lambda r: (json.dumps(emitJson(r)))
+    rdd_success_json = rdd_success.map(lambda r: jsonRow(r))
 
     if rdd_success_json.isEmpty():
         print "### NO SUCCESS DATA TO WRITE"
@@ -379,7 +384,8 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
         else:
             raise RuntimeError("Unrecognized output format: %s" % outputFormat)
 
-    rdd_fail_json = rdd_fail.map(lambda r: json.dumps(emitJson(r)))
+    # rdd_fail_json = rdd_fail.map(lambda r: json.dumps(emitJson(r)))
+    rdd_fail_json = rdd_fail.map(lambda r: jsonRow(r))
 
     if rdd_fail_json.isEmpty():
         print "### NO FAIL DATA TO WRITE"
