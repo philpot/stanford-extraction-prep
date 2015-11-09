@@ -368,11 +368,19 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
         return d
 
     def jsonRow(r):
-        j = emitJson(r)
-        return (j.get("url", "noUrlAvailable"), j)
+        d = emitJson(r)
+        return (d.get("url", "noUrlAvailable"), json.dumps(d))
 
     # rdd_success_json = rdd_success.map(lambda r: (json.dumps(emitJson(r)))
     rdd_success_json = rdd_success.map(lambda r: jsonRow(r))
+
+    z = rdd_success_json.take(1)
+    print z
+    for t in z:
+            print t
+            for elt in t:
+                    print elt
+                    print type(elt)
 
     if rdd_success_json.isEmpty():
         print "### NO SUCCESS DATA TO WRITE"
