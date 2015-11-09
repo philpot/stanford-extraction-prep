@@ -382,8 +382,18 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
         elif outputFormat == "text":
             rdd_success_json.saveAsTextFile(successOutput)
         elif outputFormat == "tsv":
-            rdd_tsv = rdd_success_json.map(lambda (k,p): k + "\t" + p[0] + "\t" + p[1])
-            rdd_tsv.saveAsTextFile(successOutput)
+            # might not work anymore
+            rdd_success = rdd_success_json.map(lambda (k,p): k + "\t" + p[0] + "\t" + p[1])
+            rdd_success.saveAsTextFile(successOutput)
+        elif outputFormat == "newSequence":
+            # adapted from organizationPatentAndLegalActionAggregations
+            outputFormatClassName = "org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat"
+            config= {"mapreduce.output.fileoutputformat.compress": "true", 
+                     "mapreduce.output.fileoutputformat.compress.codec": "org.apache.hadoop.io.compress.DefaultCodec",
+                     "mapreduce.output.fileoutputformat.compress.type": "RECORD"}
+            rdd_success.saveAsNewAPIHadoopFile(successOutput, outputFormatClassName,
+                                               "org.apache.hadoop.io.Text", "org.apache.hadoop.io.Text",
+                                               None, None, config)
         else:
             raise RuntimeError("Unrecognized output format: %s" % outputFormat)
 
@@ -398,8 +408,18 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
         elif outputFormat == "text":
             rdd_fail_json.saveAsTextFile(failOutput)
         elif outputFormat == "tsv":
-            rdd_tsv = rdd_fail_json.map(lambda (k,p): k + "\t" + p[0] + "\t" + p[1])
-            rdd_tsv.saveAsTextFile(failOutput)
+            # might not work anymore
+            rdd_fail = rdd_fail_json.map(lambda (k,p): k + "\t" + p[0] + "\t" + p[1])
+            rdd_fail.saveAsTextFile(failOutput)
+        elif outputFormat == "newSequence":
+            # adapted from organizationPatentAndLegalActionAggregations
+            outputFormatClassName = "org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat"
+            config= {"mapreduce.output.fileoutputformat.compress": "true", 
+                     "mapreduce.output.fileoutputformat.compress.codec": "org.apache.hadoop.io.compress.DefaultCodec",
+                     "mapreduce.output.fileoutputformat.compress.type": "RECORD"}
+            rdd_fail.saveAsNewAPIHadoopFile(failOutput, outputFormatClassName,
+                                            "org.apache.hadoop.io.Text", "org.apache.hadoop.io.Text",
+                                            None, None, config)
         else:
             raise RuntimeError("Unrecognized output format: %s" % outputFormat)
 
