@@ -374,14 +374,6 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
     # rdd_success_json = rdd_success.map(lambda r: (json.dumps(emitJson(r)))
     rdd_success_json = rdd_success.map(lambda r: jsonRow(r))
 
-    z = rdd_success_json.take(1)
-    print z
-    for t in z:
-            print t
-            for elt in t:
-                    print elt
-                    print type(elt)
-
     if rdd_success_json.isEmpty():
         print "### NO SUCCESS DATA TO WRITE"
     else:
@@ -395,6 +387,10 @@ def prep(sc, cdr, stanford, successOutput, failOutput,
             rdd_success.saveAsTextFile(successOutput)
         elif outputFormat == "newSequence":
             # adapted from organizationPatentAndLegalActionAggregations
+            # This does not work
+            # apparently we can't write something that it thinks is an ArrayWritable as Text
+            # wrong key class: org.apache.hadoop.io.ArrayWritable is not class org.apache.hadoop.io.Text
+            # seems like a Converter class is needed, but can't find one that performs this conversion
             outputFormatClassName = "org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat"
             config= {"mapreduce.output.fileoutputformat.compress": "true", 
                      "mapreduce.output.fileoutputformat.compress.codec": "org.apache.hadoop.io.compress.DefaultCodec",
