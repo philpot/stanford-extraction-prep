@@ -74,3 +74,19 @@ Command line arguments
 -z: for debugging: if 2, spill rdd contents to named file at each rdd computed; if 1, dump only partition information; if 0, no information
 -x: for debugging: focus on a single known record only
 -y: outputFormat: may be text, sequence, tsv, or newSequence (= compressed sequence file using new Hadoop API: under development)
+
+
+Counts of stanford extractions (escort directory)
+ 433922 email_addresses.tsv
+ 29907390 ismassageparlorad.tsv
+ 13854857 phone_numbers.tsv
+ 7598570 rates.tsv
+ 29907390 service.tsv
+
+Estimated yield when joining with ht20mil
+
+email: 46% or roughly 199600
+massage: 53% or roughly 15850000
+phone numbers: 55% or roughly 7620000
+rate: 52% or roughly 3951000
+service (incall/outcall/etc.): 16449000
